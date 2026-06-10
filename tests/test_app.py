@@ -310,3 +310,71 @@ async def test_gzipped_upstream_response_is_decompressed_and_recorded(
     data = json.loads(usage_path.read_text())
     assert data[0]["input_tokens"] == 3
     assert data[0]["output_tokens"] == 4
+
+
+async def test_model_is_recorded_for_non_streaming_response(
+    upstream, tmp_usage_dir, tmp_log_file
+):
+    def handler(req):
+        return 200, {"content-type": "application/json"}, json.dumps(
+            {
+                "id": "x",
+                "model": "openai/gpt-4o-mini",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            }
+        ).encode("utf-8")
+
+    upstream.set_response(handler)
+    app = create_app(
+        target_url=f"http://127.0.0.1:{upstream.port}/api/v1",
+        target_api_key="upstream-key",
+        usage_dir=tmp_usage_dir,
+        log_file=tmp_log_file,
+    )
+
+    async with _build_client(app) as client:
+        r = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-model-ns"},
+            json={"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert r.status_code == 200
+
+    data = json.loads((Path(tmp_usage_dir) / "sk-model-ns.json").read_text())
+    assert data[0]["model"] == "openai/gpt-4o-mini"
+    assert data[0]["input_tokens"] == 1
+
+
+async def test_model_is_recorded_for_streaming_response(
+    upstream, tmp_usage_dir, tmp_log_file
+):
+    def handler(req):
+        sse = (
+            b'data: {"id":"1","model":"anthropic/claude-3.5-sonnet","choices":[{"delta":{"content":"ok"}}]}\n\n'
+            b'data: {"id":"1","model":"anthropic/claude-3.5-sonnet","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7}}\n\n'
+            b'data: [DONE]\n\n'
+        )
+        return 200, {"content-type": "text/event-stream"}, sse
+
+    upstream.set_sse_response(handler)
+    app = create_app(
+        target_url=f"http://127.0.0.1:{upstream.port}/api/v1",
+        target_api_key="upstream-key",
+        usage_dir=tmp_usage_dir,
+        log_file=tmp_log_file,
+    )
+
+    async with _build_client(app) as client:
+        r = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-model-s"},
+            json={"model": "anthropic/claude-3.5-sonnet", "stream": True,
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert r.status_code == 200
+
+    data = json.loads((Path(tmp_usage_dir) / "sk-model-s.json").read_text())
+    assert data[0]["model"] == "anthropic/claude-3.5-sonnet"
+    assert data[0]["input_tokens"] == 5
+    assert data[0]["output_tokens"] == 7

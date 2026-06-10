@@ -75,6 +75,10 @@ def _record_for_result(
             "output_tokens": 0,
             "error": result.error or "unknown_error",
         }
+    # Include the upstream model id when the response carried one. It's
+    # metadata the user explicitly asked to record per-call.
+    if result.model:
+        record["model"] = result.model
     return record
 
 

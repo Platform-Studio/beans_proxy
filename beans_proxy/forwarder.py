@@ -41,6 +41,7 @@ class ForwardResult:
     body: bytes = b""
     content_type: str = "application/json"
     is_stream: bool = False
+    model: str | None = None
 
     @property
     def is_success(self) -> bool:
@@ -215,6 +216,92 @@ def extract_usage_from_sse(body: bytes) -> dict[str, int] | None:
     return last
 
 
+def extract_model_from_json(body: bytes) -> str | None:
+    """Extract the `model` field from a non-streaming OpenAI-style response."""
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    if isinstance(model, str) and model:
+        return model
+    return None
+
+
+def extract_model_from_sse(body: bytes) -> str | None:
+    """Extract the `model` field from a streamed OpenAI-style SSE response.
+
+    The model id is the same on every chunk of a given response, so we return
+    the first one we see.
+    """
+    if not body:
+        return None
+    for raw_line in body.splitlines():
+        line = raw_line.decode("utf-8", errors="ignore").strip() if isinstance(raw_line, bytes) else raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        model = obj.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return None
+
+
+def extract_model_from_json(body: bytes) -> str | None:
+    """Extract the `model` field from a non-streaming OpenAI-style response."""
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    if isinstance(model, str) and model:
+        return model
+    return None
+
+
+def extract_model_from_sse(body: bytes) -> str | None:
+    """Extract the `model` field from a streamed OpenAI-style SSE response.
+
+    The model id is the same on every chunk of a given response, so we return
+    the first one we see.
+    """
+    if not body:
+        return None
+    for raw_line in body.splitlines():
+        line = raw_line.decode("utf-8", errors="ignore").strip() if isinstance(raw_line, bytes) else raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        model = obj.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return None
+
+
 def _coerce_usage(usage: dict[str, Any]) -> dict[str, int] | None:
     """Pull out the integer token fields we care about, if present."""
     in_t = usage.get("prompt_tokens", usage.get("input_tokens"))
@@ -342,10 +429,13 @@ class Forwarder:
             }
 
             usage = None
+            model = None
             if is_stream or "text/event-stream" in content_type.lower():
                 usage = extract_usage_from_sse(resp_body)
+                model = extract_model_from_sse(resp_body)
             else:
                 usage = extract_usage_from_json(resp_body)
+                model = extract_model_from_json(resp_body)
 
             if upstream_status >= 400:
                 err_tag = f"upstream_{upstream_status // 100}xx"
@@ -364,15 +454,17 @@ class Forwarder:
                     body=resp_body,
                     content_type=content_type,
                     is_stream=is_stream,
+                    model=model,
                 )
 
             self.log.info(
-                "upstream %s %s -> %d in %.2fs usage=%s",
+                "upstream %s %s -> %d in %.2fs usage=%s model=%s",
                 method,
                 caller_path,
                 upstream_status,
                 elapsed,
                 usage,
+                model,
             )
             return ForwardResult(
                 status_code=upstream_status,
@@ -381,6 +473,7 @@ class Forwarder:
                 body=resp_body,
                 content_type=content_type,
                 is_stream=is_stream,
+                model=model,
             )
         except httpx.TimeoutException as exc:
             self.log.warning("upstream timeout: %s", exc)

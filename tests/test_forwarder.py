@@ -8,6 +8,8 @@ from beans_proxy.forwarder import (
     Forwarder,
     _normalize_base_for_caller,
     build_upstream_url,
+    extract_model_from_json,
+    extract_model_from_sse,
     extract_usage_from_json,
     extract_usage_from_sse,
     inject_stream_options,
@@ -160,3 +162,34 @@ def test_is_passthrough_path_subpath():
 
 def test_is_passthrough_path_negative():
     assert is_passthrough_path("/v1/chat/completions", ("/v1/models",)) is False
+
+
+def test_extract_model_from_json_present():
+    body = b'{"id":"x","model":"openai/gpt-4o-mini","choices":[]}'
+    assert extract_model_from_json(body) == "openai/gpt-4o-mini"
+
+
+def test_extract_model_from_json_missing():
+    assert extract_model_from_json(b'{"id":"x","choices":[]}') is None
+
+
+def test_extract_model_from_json_invalid():
+    assert extract_model_from_json(b"not json") is None
+
+
+def test_extract_model_from_json_empty():
+    assert extract_model_from_json(b"") is None
+
+
+def test_extract_model_from_sse_first_chunk():
+    body = (
+        b'data: {"id":"1","model":"anthropic/claude-3.5-sonnet","choices":[]}\n\n'
+        b'data: {"id":"1","model":"anthropic/claude-3.5-sonnet","choices":[],"usage":{}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    assert extract_model_from_sse(body) == "anthropic/claude-3.5-sonnet"
+
+
+def test_extract_model_from_sse_missing():
+    body = b'data: {"id":"1","choices":[]}\n\ndata: [DONE]\n\n'
+    assert extract_model_from_sse(body) is None

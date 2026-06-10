@@ -28,12 +28,15 @@ If the file already exists, we will add to the array in the JSON file.
     "started_at": "2024-06-01T12:00:00Z",
     "ended_at": "2024-06-01T12:05:00Z",
     "input_tokens": 100,
-    "output_tokens": 200
+    "output_tokens": 200,
+    "model": "openai/gpt-4o-mini"
   }
 ]
 ```
 
 Each entry is an object with at least `started_at` and `ended_at` (ISO 8601 timestamps), and `input_tokens` and `output_tokens` (non-negative integers). On any call that completes upstream — including calls that return a non-2xx status — the `input_tokens` / `output_tokens` values come from the upstream response's `usage` field.
+
+The `model` field is optional and is set to the `model` value from the upstream response body (OpenAI / OpenRouter return the resolved model id on every chat completion, streaming or not). If the upstream response does not include a `model` field, the proxy omits the field from the record rather than recording an empty value.
 
 **Concurrent writes:** Both Cline and Copilot CLI can spawn subagents, so multiple requests may hit the proxy concurrently for the same pseudo-API key. To avoid lost or interleaved writes, the proxy must perform atomic file writes (write to a temp file in the same directory, then `os.replace` it into place) and serialize per-key writes with an in-process lock keyed on the pseudo-API key.
 
