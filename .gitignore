@@ -1,0 +1,57 @@
+# --- Python ----------------------------------------------------------------
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*$py.class
+*.so
+# Distribution / packaging
+*.egg-info/
+build/
+dist/
+.eggs/
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# --- Secrets & local config -------------------------------------------------
+# Real .env (with API keys). The template .env.example IS tracked.
+.env
+.env.*
+!.env.example
+# Editor / IDE state
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+# macOS noise
+._*
+# Python editor files
+*.egg
+
+# --- Proxy runtime artifacts -----------------------------------------------
+# Token usage (per-pseudo-key JSON files; may contain sensitive data)
+token_usage/
+# Proxy log
+*.log
+# Cline's per-task isolated data dirs (used for parallel invocations)
+.cline-task-*/
+# Things that show up in dev but shouldn't be in source
+tmp/
+*.bak
+*~
+
