@@ -15,8 +15,11 @@ files directly, or hit `GET /usage/{pseudo_key}` to retrieve them.
 ## Quick command reference
 
 ```bash
-# Start the proxy (loads .env in the current dir)
-. .venv/bin/activate && python -m beans_proxy &
+# Start the proxy in the background (loads .env in the current dir)
+./beans.sh                       # default: start in background
+./beans.sh --foreground          # run in foreground (Ctrl-C to stop)
+./beans.sh status                # is it up?
+./beans.sh stop                  # stop the background instance
 
 # Cline — sticky config in ~/.cline/data/settings/providers.json
 ./run_cline.sh sk-task-12345 "fix the login bug"
@@ -63,6 +66,22 @@ cp .env.example .env
 ```
 
 ## Run
+
+The proxy is managed by [beans.sh](beans.sh), which activates the local
+`.venv`, reads `.env`, and talks to `python -m beans_proxy` for you.
+
+```bash
+./beans.sh                # start in the background (default)
+./beans.sh --foreground   # run in the foreground (Ctrl-C to stop)
+./beans.sh status         # is it up?
+./beans.sh stop           # stop the background instance
+./beans.sh restart        # stop, then start again
+./beans.sh --help         # full usage
+```
+
+The default (background) mode writes logs to `beans_proxy.log` and a pid to
+`.beans_proxy.pid`, then polls `GET /healthz` for up to 10 seconds to confirm
+the server is up. If you'd rather skip the wrapper, the underlying command is:
 
 ```bash
 . .venv/bin/activate
