@@ -102,6 +102,71 @@ async def test_streaming_chat_completion_injects_stream_options_and_records(upst
     assert data[0]["output_tokens"] == 9
 
 
+async def test_copilot_apply_patch_workaround_logs_before_forwarding(
+    upstream, tmp_usage_dir, tmp_log_file
+):
+    def handler(req):
+        log_text = Path(tmp_log_file).read_text()
+        assert "temporary Copilot compatibility workaround" in log_text
+        assert "tools=apply_patch" in log_text
+
+        body = json.loads(req["body"])
+        assert body["tools"] == [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch",
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": "start: /.+/",
+                },
+            }
+        ]
+        return 200, {"content-type": "application/json"}, json.dumps(
+            {
+                "model": body["model"],
+                "choices": [],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        ).encode("utf-8")
+
+    upstream.set_response(handler)
+    app = create_app(
+        target_url=f"http://127.0.0.1:{upstream.port}/api/v1",
+        target_api_key="upstream-key",
+        usage_dir=tmp_usage_dir,
+        log_file=tmp_log_file,
+    )
+
+    async with _build_client(app) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer task-copilot"},
+            json={
+                "model": "gpt-5.6-sol",
+                "tools": [
+                    {
+                        "type": "custom",
+                        "custom": {
+                            "name": "apply_patch",
+                            "description": "Apply a patch",
+                            "format": {
+                                "type": "grammar",
+                                "grammar": {
+                                    "syntax": "lark",
+                                    "definition": "start: /.+/",
+                                },
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
 async def test_passthrough_endpoint_does_not_record(upstream, tmp_usage_dir, tmp_log_file):
     def handler(req):
         return 200, {"content-type": "application/json"}, json.dumps(

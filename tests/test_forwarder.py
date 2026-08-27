@@ -14,6 +14,7 @@ from beans_proxy.forwarder import (
     extract_usage_from_sse,
     inject_stream_options,
     is_passthrough_path,
+    normalize_custom_tools,
 )
 
 
@@ -114,6 +115,60 @@ def test_inject_stream_options_noop_when_not_streaming():
 def test_inject_stream_options_noop_on_invalid_json():
     body = b"not json"
     assert inject_stream_options(body) == body
+
+
+def test_normalize_custom_tools_flattens_copilot_schema():
+    body = (
+        b'{"model":"gpt-5.6-sol","tools":['
+        b'{"type":"function","function":{"name":"bash"}},'
+        b'{"type":"custom","custom":{"name":"apply_patch",'
+        b'"description":"Apply a patch",'
+        b'"format":{"type":"grammar","grammar":{'
+        b'"syntax":"lark","definition":"start: /.+/"}}}}'
+        b']}'
+    )
+
+    import json as _json
+    normalized, rewritten_tools = normalize_custom_tools(body, "/v1/chat/completions")
+    parsed = _json.loads(normalized)
+
+    assert rewritten_tools == ["apply_patch"]
+    assert parsed["tools"][0] == {"type": "function", "function": {"name": "bash"}}
+    assert parsed["tools"][1] == {
+        "type": "custom",
+        "name": "apply_patch",
+        "description": "Apply a patch",
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": "start: /.+/",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "path"),
+    [
+        (b'{"model":"gpt-5.6-sol","tools":[{"type":"custom","name":"apply_patch"}]}', "/v1/chat/completions"),
+        (b"not json", "/v1/chat/completions"),
+        (b'{"model":"claude-sonnet-4","tools":[]}', "/v1/chat/completions"),
+        (b'{"model":"other-provider/gpt-5.6-sol","tools":[]}', "/v1/chat/completions"),
+        (b'{"model":"gpt-5.6-sol","tools":[]}', "/v1/responses"),
+    ],
+)
+def test_normalize_custom_tools_preserves_nonmatching_requests(body, path):
+    assert normalize_custom_tools(body, path) == (body, [])
+
+
+def test_normalize_custom_tools_preserves_conflicting_outer_fields():
+    body = (
+        b'{"model":"openai/gpt-5.6-sol","tools":['
+        b'{"type":"custom","name":"other","custom":{"name":"apply_patch",'
+        b'"format":{"type":"grammar","grammar":{'
+        b'"syntax":"lark","definition":"start: /.+/"}}}}]}'
+    )
+
+    assert normalize_custom_tools(body, "/chat/completions") == (body, [])
 
 
 def test_extract_usage_from_json_prompt_completion():

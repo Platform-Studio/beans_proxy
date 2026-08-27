@@ -163,6 +163,75 @@ def inject_stream_options(body: bytes) -> bytes:
     return json.dumps(data).encode("utf-8")
 
 
+def normalize_custom_tools(body: bytes, caller_path: str) -> tuple[bytes, list[str]]:
+    """Apply the temporary Copilot custom-tool workaround when narrowly applicable.
+
+    TODO: Remove this compatibility rewrite when Copilot CLI emits the standard
+    OpenAI chat-completions custom-tool shape. Copilot currently nests the
+    built-in ``apply_patch`` definition under ``custom`` and its grammar fields
+    under ``format.grammar``; some OpenAI-compatible providers reject that shape.
+    """
+    if not body:
+        return body, []
+    normalized_path = "/" + caller_path.strip("/")
+    if normalized_path not in {"/chat/completions", "/v1/chat/completions"}:
+        return body, []
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return body, []
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), list):
+        return body, []
+
+    model = data.get("model")
+    if not isinstance(model, str):
+        return body, []
+    model_parts = model.lower().split("/")
+    if len(model_parts) > 1 and model_parts[0] != "openai":
+        return body, []
+    model_name = model_parts[-1]
+    openai_model = model_name.startswith("gpt-") or model_name == "codex"
+    openai_model = openai_model or model_name.startswith(("codex-", "o1-", "o3-", "o4-"))
+    openai_model = openai_model or model_name in {"o1", "o3", "o4"}
+    if not openai_model:
+        return body, []
+
+    rewritten_tools: list[str] = []
+    for tool in data["tools"]:
+        if not isinstance(tool, dict) or tool.get("type") != "custom":
+            continue
+        custom = tool.get("custom")
+        if not isinstance(custom, dict) or custom.get("name") != "apply_patch":
+            continue
+        if any(key in tool for key in ("name", "description", "format")):
+            continue
+        custom_format = custom.get("format")
+        if not isinstance(custom_format, dict) or custom_format.get("type") != "grammar":
+            continue
+        grammar = custom_format.get("grammar")
+        if not isinstance(grammar, dict):
+            continue
+        if not isinstance(grammar.get("syntax"), str) or not isinstance(
+            grammar.get("definition"), str
+        ):
+            continue
+        if any(key in custom_format for key in ("syntax", "definition")):
+            continue
+
+        flattened_format = {
+            key: value for key, value in custom_format.items() if key != "grammar"
+        }
+        flattened_format.update(grammar)
+        tool.pop("custom")
+        tool.update({key: value for key, value in custom.items() if key != "format"})
+        tool["format"] = flattened_format
+        rewritten_tools.append("apply_patch")
+
+    if not rewritten_tools:
+        return body, []
+    return json.dumps(data).encode("utf-8"), rewritten_tools
+
+
 def extract_usage_from_json(body: bytes) -> dict[str, int] | None:
     """Extract a `usage` dict from a non-streaming OpenAI-style response body."""
     if not body:
@@ -387,6 +456,14 @@ class Forwarder:
     ) -> ForwardResult:
         """Forward an HTTP request to the upstream and return a ForwardResult."""
         url = self.upstream_url_for(caller_path, caller_query)
+        body, rewritten_tools = normalize_custom_tools(body, caller_path)
+        if rewritten_tools:
+            self.log.warning(
+                "temporary Copilot compatibility workaround rewrote custom tool(s) "
+                "before forwarding: path=%s tools=%s",
+                caller_path,
+                ",".join(rewritten_tools),
+            )
         is_stream = self._body_wants_stream(body)
         if is_stream:
             body = inject_stream_options(body)
@@ -440,11 +517,13 @@ class Forwarder:
             if upstream_status >= 400:
                 err_tag = f"upstream_{upstream_status // 100}xx"
                 # Per spec, if usage is present, record it without an error tag.
+                error_preview = resp_body[:2000].decode("utf-8", errors="replace")
                 self.log.info(
-                    "upstream returned %d in %.2fs (usage=%s)",
+                    "upstream returned %d in %.2fs (usage=%s body=%s)",
                     upstream_status,
                     elapsed,
                     usage,
+                    error_preview,
                 )
                 return ForwardResult(
                     status_code=upstream_status,
