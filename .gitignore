@@ -48,6 +48,9 @@ ENV/
 token_usage/
 # Proxy log
 *.log
+*.log.*
+# PID file written by beans.sh for the background process
+.beans_proxy.pid
 # Cline's per-task isolated data dirs (used for parallel invocations)
 .cline-task-*/
 # Things that show up in dev but shouldn't be in source
@@ -55,3 +58,4 @@ tmp/
 *.bak
 *~
 
+plans/

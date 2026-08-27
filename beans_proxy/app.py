@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .forwarder import ForwardResult, Forwarder
 from .logging_setup import configure_logging, get_logger
+from .pricing import ModelPricing, PricingCatalog, UNKNOWN_MODEL_ERROR
 from .usage import UsageStore, now_iso
 
 # Pseudo-API keys can be arbitrary strings; we accept anything URL-safe enough
@@ -58,6 +61,8 @@ def _record_for_result(
     result: ForwardResult,
     started_at: str,
     ended_at: str,
+    request_model: str | None = None,
+    pricing: PricingCatalog | None = None,
 ) -> dict[str, Any]:
     """Build a usage record from a ForwardResult per the spec."""
     if result.usage is not None:
@@ -79,7 +84,33 @@ def _record_for_result(
     # metadata the user explicitly asked to record per-call.
     if result.model:
         record["model"] = result.model
+    if result.usage is not None and pricing is not None:
+        model = result.model or request_model
+        model_pricing = pricing.get(model)
+        if model_pricing is None:
+            record["error"] = UNKNOWN_MODEL_ERROR
+        else:
+            _add_costs(record, model_pricing)
     return record
+
+
+def _add_costs(record: dict[str, Any], pricing: ModelPricing) -> None:
+    input_cost = Decimal(record["input_tokens"]) * pricing.input_price
+    output_cost = Decimal(record["output_tokens"]) * pricing.output_price
+    record["input_cost"] = float(input_cost)
+    record["output_cost"] = float(output_cost)
+    record["total_cost"] = float(input_cost + output_cost)
+    record["currency"] = "USD"
+
+
+def _request_model(body: bytes) -> str | None:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("model"), str):
+        return data["model"]
+    return None
 
 
 def create_app(
@@ -98,6 +129,7 @@ def create_app(
     log = get_logger()
 
     store = UsageStore(usage_dir)
+    pricing = PricingCatalog()
     forwarder = Forwarder(
         target_url=target_url,
         target_api_key=target_api_key,
@@ -105,7 +137,12 @@ def create_app(
         log=log,
     )
 
-    app = FastAPI(title="Beans Proxy", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await pricing.load()
+        yield
+
+    app = FastAPI(title="Beans Proxy", version="0.1.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
@@ -137,7 +174,9 @@ def create_app(
             return JSONResponse({"detail": "not found"}, status_code=404)
         caller_path = request.url.path
         caller_query = request.url.query
-        return await _handle_proxy(request, caller_path, caller_query, forwarder, store, log)
+        return await _handle_proxy(
+            request, caller_path, caller_query, forwarder, store, pricing, log
+        )
 
     return app
 
@@ -148,6 +187,7 @@ async def _handle_proxy(
     caller_query: str,
     forwarder: Forwarder,
     store: UsageStore,
+    pricing: PricingCatalog,
     log: Any,
 ) -> Response:
     # Auth: extract pseudo key, but do not validate format (per spec).
@@ -159,6 +199,7 @@ async def _handle_proxy(
         )
 
     body = await request.body()
+    request_model = _request_model(body)
 
     # Passthrough for non-billable endpoints: forward, but don't record.
     if forwarder.should_passthrough(caller_path):
@@ -174,7 +215,9 @@ async def _handle_proxy(
     ended_at = now_iso()
 
     # Always record, even on failure (per spec).
-    record = _record_for_result(result, started_at, ended_at)
+    record = _record_for_result(
+        result, started_at, ended_at, request_model=request_model, pricing=pricing
+    )
     await store.append(pseudo_key, record)
 
     log.info(

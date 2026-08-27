@@ -1,6 +1,7 @@
 # beans_proxy
 
-A lightweight proxy for LLM API calls that records token usage by API key. See
+A lightweight proxy for LLM API calls that records token usage and calculated
+cost by API key. See
 [spec.md](spec.md) for the full design.
 
 ## What it does
@@ -9,7 +10,8 @@ You point Cline / Copilot CLI / any OpenAI-compatible client at Beans Proxy
 using a per-task pseudo-API key (e.g. `sk-task-12345`). Beans Proxy forwards
 the request to the upstream LLM API (OpenRouter), and writes a record of
 input/output token usage — keyed on the pseudo-API key — to
-`token_usage/<pseudo_key>.json`. Downstream systems can then read the JSON
+`token_usage/<pseudo_key>.json`. Pricing is fetched once from OpenRouter at
+startup and held in memory. Downstream systems can then read the JSON
 files directly, or hit `GET /usage/{pseudo_key}` to retrieve them.
 
 ## Quick command reference
@@ -120,7 +122,7 @@ For OpenRouter, the recommended config is `BEANS_PROXY_TARGET_URL=https://openro
 
 ## Endpoints
 
-- `POST /v1/chat/completions` (and any other path the caller sends) — forwarded to upstream. Streaming requests are augmented with `stream_options.include_usage: true` so the final token counts are emitted. Always recorded.
+- `POST /v1/chat/completions` (and any other path the caller sends) — forwarded to upstream. Streaming requests are augmented with `stream_options.include_usage: true` so the final token counts are emitted. Always recorded. Records include USD input/output/total costs when the model has a known OpenRouter price.
 - `GET /v1/models` (and other configured passthrough paths) — forwarded, not recorded.
 - `GET /usage/{pseudo_key}` — returns the full recorded usage array for the key.
 - `GET /healthz` — health check.

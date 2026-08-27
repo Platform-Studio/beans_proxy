@@ -59,7 +59,13 @@ Example failure record:
 
 Downstream consumers should treat any record without an `error` field as a successful call, and any record with an `error` field as a failed call whose token counts (if any) should not be summed into spend.
 
-**Cost vs. tokens:** The proxy records raw token counts (`input_tokens` / `output_tokens`). Translating tokens into monetary cost is a secondary process handled outside the proxy and is out of scope here.
+**Cost calculation:** The proxy also records USD input, output, and total costs
+when the model has a known OpenRouter price. Pricing is fetched once from
+`https://openrouter.ai/api/v1/models` at startup and stored in memory. The
+pricing response is preprocessed into a lookup keyed by both `id` and
+`canonical_slug`; only base `prompt` and `completion` prices are used. Existing
+records are not backfilled. If no usable price is available, the token record
+omits cost fields and includes `error: "unknown model/no price"`.
 
 ### Configuration
 The Beans Proxy will be configured with the actual LLM API endpoint and API key via environment variables. The target URL is the OpenRouter base URL, and the proxy forwards any path the caller supplies under it.

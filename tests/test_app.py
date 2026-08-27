@@ -62,7 +62,7 @@ async def test_non_streaming_chat_completion_records_usage(upstream, tmp_usage_d
     assert len(data) == 1
     assert data[0]["input_tokens"] == 12
     assert data[0]["output_tokens"] == 34
-    assert "error" not in data[0]
+    assert data[0]["error"] == "unknown model/no price"
 
 
 async def test_streaming_chat_completion_injects_stream_options_and_records(upstream, tmp_usage_dir, tmp_log_file):
@@ -184,7 +184,7 @@ async def test_upstream_5xx_with_usage_writes_record_no_error(upstream, tmp_usag
     data = json.loads(usage_path.read_text())
     assert data[0]["input_tokens"] == 3
     assert data[0]["output_tokens"] == 4
-    assert "error" not in data[0]
+    assert data[0]["error"] == "unknown model/no price"
 
 
 async def test_get_usage_endpoint_returns_recorded_data(upstream, tmp_usage_dir, tmp_log_file):
