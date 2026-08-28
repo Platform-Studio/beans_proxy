@@ -1,18 +1,40 @@
-# beans_proxy
+# Beans Proxy
 
-A lightweight proxy for LLM API calls that records token usage and calculated
-cost by API key. See
-[spec.md](spec.md) for the full design.
+A lightweight proxy for LLM API calls that records token usage and calculated cost per task by using a pseudo-API key.
 
-## What it does
+Built to be used with [Orchestra](https://github.com/platform-studio/orchestra) but useful standalone.
 
-You point Cline / Copilot CLI / any OpenAI-compatible client at Beans Proxy
-using a per-task pseudo-API key (e.g. `sk-task-12345`). Beans Proxy forwards
-the request to the upstream LLM API (OpenRouter), and writes a record of
-input/output token usage — keyed on the pseudo-API key — to
-`token_usage/<pseudo_key>.json`. Pricing is fetched once from OpenRouter at
-startup and held in memory. Downstream systems can then read the JSON
-files directly, or hit `GET /usage/{pseudo_key}` to retrieve them.
+## How it works
+
+- Run Beans Proxy
+- Point Copilot / Cline / any OpenAI-compatible client at Beans Proxy (e.g. at https://127.0.0.1:8000)
+- Use any string you like as an API key (e.g. `sk-task-12345`)
+- Beans Proxy forwards the request to the upstream LLM API (e.g. OpenRouter), substituing in your actual API key
+- Beans Proxy records your token usage and calculated cost in a file keyed by the pseudo-API key (e.g. `token_usage/sk-task-12345.json`). Subsequent calls using the same pseudo-API key append to the same file.
+- A downstream system can read the JSON files directly or query the proxy for usage data - `GET /usage/{pseudo_key}`.
+
+## Usage Data
+
+Usage data is stored in JSON. A successful call for a model with a known
+OpenRouter price produces a record like this. JSON numeric formatting may omit
+trailing zeroes, so `0.1200` will be stored as `0.12`.
+
+```json
+{
+  "started_at": "2026-06-24T21:52:33Z",
+  "ended_at": "2026-06-24T21:52:35Z",
+  "input_tokens": 15431,
+  "output_tokens": 214,
+  "model": "openai/gpt-5.4-20260305",
+  "input_cost": 0.12,
+  "output_cost": 0.0034,
+  "total_cost": 0.1234,
+  "currency": "USD"
+}
+```
+
+## Calculating Pricing
+BeansProxy fetches latest pricing from OpenRouter and stores them in memory. To update pricing, just restart Beans Proxy.
 
 ## Quick command reference
 
@@ -34,8 +56,7 @@ curl http://127.0.0.1:8000/usage/sk-task-12345
 cat token_usage/sk-task-12345.json
 ```
 
-That's the whole flow. Details, including the isolation trade-offs, are in
-the sections below.
+That's the whole flow. Details, including the isolation trade-offs, are in the sections below.
 
 ## Cline vs Copilot CLI at a glance
 
@@ -52,10 +73,7 @@ isolation models:
 | Authentication with proxy | Pseudo key is the `apiKey` field in the persisted provider entry | Pseudo key is the `COPILOT_PROVIDER_API_KEY` env var |
 | `Authorization: Bearer` sent to proxy | Yes (Cline sends Bearer + pseudo key) | Yes (Copilot sends Bearer + pseudo key) |
 
-For one-off / interactive use, both work. If you want to run multiple
-pseudo-keyed agents in parallel without cleanup, prefer **Copilot CLI** — its
-env-var model is purpose-built for this. Cline is the right choice if you
-already use it inside VS Code.
+For one-off / interactive use, both work. If you want to run multiple pseudo-keyed agents in parallel without cleanup, prefer **Copilot CLI** — its env-var model is purpose-built for this. Cline is the right choice if you already use it inside VS Code.
 
 ## Setup
 
@@ -284,9 +302,10 @@ automatically.
 python -m pytest tests/ -v
 ```
 
-There are 41 tests covering URL building, stream-options injection, usage
-extraction (JSON and SSE), atomic concurrent writes, failure accounting, the
-read endpoint, and end-to-end proxy behavior against a local mock upstream.
+There are currently 63 tests covering URL building, stream-options injection,
+usage extraction (JSON and SSE), pricing loading and calculation, atomic
+concurrent writes, failure accounting, the read endpoint, and end-to-end proxy
+behavior against a local mock upstream.
 
 ## File layout
 
@@ -298,11 +317,13 @@ beans_proxy/
   config.py          # Pydantic settings / env loading
   forwarder.py       # upstream HTTP, stream options, usage extraction
   logging_setup.py
+  pricing.py         # startup-loaded OpenRouter pricing catalog
   usage.py           # atomic JSON persistence
 tests/
   conftest.py        # in-process mock upstream
   test_app.py        # end-to-end
   test_forwarder.py
+  test_pricing.py
   test_usage.py
 scripts/
   smoke.py           # live end-to-end smoke run
