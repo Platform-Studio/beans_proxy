@@ -2,7 +2,8 @@
 # Manage the Beans Proxy server (start / stop / status).
 #
 # Default mode is "start in the background" — no flags required.
-# Configuration is loaded from ./.env by `python -m beans_proxy`.
+# Configuration is resolved through the same Python settings loader used by
+# `python -m beans_proxy`.
 #
 # Usage:
 #   ./beans.sh                   # START in the background (default)
@@ -12,7 +13,7 @@
 #   ./beans.sh status            # report whether the proxy is up
 #   ./beans.sh restart           # stop, then start in the background
 #
-# Env (all optional; .env values win when set there):
+# Env (all optional; environment variables override values in .env):
 #   BEANS_PROXY_HOST    bind host (default 127.0.0.1)
 #   BEANS_PROXY_PORT    bind port (default 8000)
 #   BEANS_PROXY_LOG_FILE log file path (default beans_proxy.log)
@@ -22,10 +23,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PROXY_HOST="${BEANS_PROXY_HOST:-127.0.0.1}"
-PROXY_PORT="${BEANS_PROXY_PORT:-8000}"
-PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
-LOG_FILE="${BEANS_PROXY_LOG_FILE:-beans_proxy.log}"
 PID_FILE="${SCRIPT_DIR}/.beans_proxy.pid"
 
 usage() {
@@ -41,6 +38,35 @@ _is_running() {
   local pid
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+_load_runtime_config() {
+  local config_output
+  if ! config_output="$(python -c '
+from beans_proxy.config import load_settings
+
+settings = load_settings()
+print(settings.host)
+print(settings.port)
+print(settings.log_file)
+')"; then
+    echo "Beans Proxy configuration is invalid" >&2
+    exit 1
+  fi
+
+  local config_values=()
+  while IFS= read -r value; do
+    config_values+=("$value")
+  done <<<"$config_output"
+  if [[ ${#config_values[@]} -ne 3 ]]; then
+    echo "Beans Proxy configuration returned unexpected output" >&2
+    exit 1
+  fi
+
+  PROXY_HOST="${config_values[0]}"
+  PROXY_PORT="${config_values[1]}"
+  LOG_FILE="${config_values[2]}"
+  PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
 }
 
 MODE="start"
@@ -64,12 +90,18 @@ else
   echo "warning: .venv not found, falling back to system python" >&2
 fi
 
+_load_runtime_config
+
 case "$MODE" in
   status)
     if _healthz; then
       echo "Beans Proxy is up at ${PROXY_URL}"
       [[ -f "$PID_FILE" ]] && echo "  pid:  $(cat "$PID_FILE")"
       exit 0
+    fi
+    if _is_running; then
+      echo "Beans Proxy process is running (pid $(cat "$PID_FILE")), but its health check failed at ${PROXY_URL}" >&2
+      exit 1
     fi
     echo "Beans Proxy is not responding at ${PROXY_URL}" >&2
     exit 1
@@ -108,6 +140,11 @@ case "$MODE" in
     fi
     # Stale pid file with no live process — clear it.
     [[ -f "$PID_FILE" ]] && ! _is_running && rm -f "$PID_FILE"
+    if _is_running; then
+      echo "Beans Proxy process is already running (pid $(cat "$PID_FILE")), but its health check failed at ${PROXY_URL}" >&2
+      echo "Not starting a second process; check ${LOG_FILE}" >&2
+      exit 1
+    fi
 
     echo "Starting Beans Proxy at ${PROXY_URL}"
     echo "  log:  ${LOG_FILE}"
@@ -117,10 +154,10 @@ case "$MODE" in
     PID=$!
     echo "$PID" >"$PID_FILE"
 
-    # Wait up to ~10s for /healthz to come up.
-    for _ in $(seq 1 50); do
+    # Pricing initialization can take up to 30 seconds before /healthz is ready.
+    for _ in $(seq 1 175); do
       if _healthz; then
-        echo "Beans Proxy ready at ${PROXY_URL} (pid ${PID})"
+        echo "Beans Proxy ready at ${PROXY_URL} (pid ${PID}); running in background"
         exit 0
       fi
       if ! kill -0 "$PID" 2>/dev/null; then
@@ -132,7 +169,8 @@ case "$MODE" in
       sleep 0.2
     done
 
-    echo "Beans Proxy did not become healthy within 10s; tail of log:" >&2
+    echo "Beans Proxy process is still running (pid ${PID}), but did not become healthy at ${PROXY_URL} within 35s" >&2
+    echo "The process was left running; tail of log:" >&2
     tail -n 40 "$LOG_FILE" >&2 || true
     exit 1
     ;;
